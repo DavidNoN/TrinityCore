@@ -2349,8 +2349,20 @@ void Creature::SendAIReaction(AiReaction reactionType)
 
 void Creature::CallAssistance()
 {
-    if (!m_AlreadyCallAssistance && GetVictim() && !IsPet() && !IsCharmed())
+    if (!m_AlreadyCallAssistance && !IsPet() && !IsCharmed())
     {
+        // Seeking assistance stops attacking and makes the creature passive,
+        // so GetVictim() is empty on arrival even though combat is ongoing.
+        Unit* victim = GetVictim();
+        if (!victim)
+            victim = GetThreatManager().GetCurrentVictim();
+        if (!victim)
+            victim = GetThreatManager().GetAnyTarget();
+        if (!victim)
+            victim = GetCombatManager().GetAnyTarget();
+        if (!victim)
+            return;
+
         SetNoCallAssistance(true);
 
         float radius = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
@@ -2358,13 +2370,13 @@ void Creature::CallAssistance()
         if (radius > 0)
         {
             std::list<Creature*> assistList;
-            Trinity::AnyAssistCreatureInRangeCheck u_check(this, GetVictim(), radius);
+            Trinity::AnyAssistCreatureInRangeCheck u_check(this, victim, radius);
             Trinity::CreatureListSearcher<Trinity::AnyAssistCreatureInRangeCheck> searcher(this, assistList, u_check);
             Cell::VisitGridObjects(this, searcher, radius);
 
             if (!assistList.empty())
             {
-                AssistDelayEvent* e = new AssistDelayEvent(EnsureVictim()->GetGUID(), *this);
+                AssistDelayEvent* e = new AssistDelayEvent(victim->GetGUID(), *this);
                 while (!assistList.empty())
                 {
                     // Pushing guids because in delay can happen some creature gets despawned => invalid pointer

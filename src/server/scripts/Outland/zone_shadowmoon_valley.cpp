@@ -50,6 +50,151 @@ EndContentData */
 
 namespace ShadowmoonValley
 {
+enum BlackBloodOfDraenor
+{
+    NPC_BLACK_BLOOD_OF_DRAENOR = 23286,
+    NPC_DRAENOR_BLOOD_TERROR   = 23290,
+    SPELL_BLACK_BLOOD_SLUDGE   = 7279
+};
+
+// At low health these oozes seek another Black Blood and combine, rather than
+// recruiting it for ordinary assistance. Preserve the survivor's combat tag.
+struct npc_black_blood_of_draenor : ScriptedAI
+{
+    explicit npc_black_blood_of_draenor(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        _mergeTarget.Clear();
+        _mergeAttempted = false;
+        _movingToMerge = false;
+        _mergeTimer = 0;
+        _mergeSearchTimer = 0;
+        _sludgeTimer = 5000;
+        me->SetReactState(REACT_AGGRESSIVE);
+    }
+
+    bool IsValidMergePartner(Creature* partner) const
+    {
+        return partner && partner != me && partner->IsAlive()
+            && partner->GetEntry() == NPC_BLACK_BLOOD_OF_DRAENOR
+            && !partner->IsCharmed() && partner->GetCharmerOrOwnerGUID().IsEmpty()
+            && me->IsInPhase(partner) && me->IsWithinDistInMap(partner, 30.0f)
+            && me->IsWithinLOSInMap(partner)
+            && (partner->GetLootRecipientGUID().IsEmpty()
+                || partner->GetLootRecipientGUID() == me->GetLootRecipientGUID());
+    }
+
+    Creature* FindMergePartner() const
+    {
+        std::list<Creature*> nearby;
+        me->GetCreatureListWithEntryInGrid(nearby, NPC_BLACK_BLOOD_OF_DRAENOR, 30.0f);
+        Creature* nearest = nullptr;
+        for (Creature* partner : nearby)
+            if (IsValidMergePartner(partner)
+                && (!nearest || me->GetDistance(partner) < me->GetDistance(nearest)))
+                nearest = partner;
+        return nearest;
+    }
+
+    void ResumeCombat()
+    {
+        _mergeTarget.Clear();
+        _movingToMerge = false;
+        me->GetMotionMaster()->Clear(MOTION_SLOT_ACTIVE);
+        me->SetReactState(REACT_AGGRESSIVE);
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        if (!_mergeTarget.IsEmpty())
+        {
+            Creature* partner = ObjectAccessor::GetCreature(*me, _mergeTarget);
+            if (me->IsCharmed() || !me->GetCharmerOrOwnerGUID().IsEmpty()
+                || !IsValidMergePartner(partner) || _mergeTimer <= diff)
+            {
+                ResumeCombat();
+                return;
+            }
+
+            _mergeTimer -= diff;
+            if (me->HasUnitState(UNIT_STATE_CASTING | UNIT_STATE_NOT_MOVE))
+                return;
+
+            if (!_movingToMerge)
+            {
+                me->GetMotionMaster()->MoveFollow(partner, 0.0f, 0.0f, false, false, false, MOTION_SLOT_ACTIVE);
+                _movingToMerge = true;
+            }
+
+            if (me->IsWithinDistInMap(partner, 1.0f))
+            {
+                if (me->UpdateEntry(NPC_DRAENOR_BLOOD_TERROR))
+                {
+                    me->SetFullHealth();
+                    me->ResetPlayerDamageReq();
+                    if (!me->GetLootRecipientGUID().IsEmpty())
+                        me->SetFlag(UNIT_DYNAMIC_FLAGS, UNIT_DYNFLAG_TAPPED);
+                    partner->DespawnOrUnsummon();
+                }
+                ResumeCombat();
+            }
+            return;
+        }
+
+        if (!UpdateVictim())
+            return;
+
+        if (me->GetEntry() == NPC_BLACK_BLOOD_OF_DRAENOR && !me->IsCharmed()
+            && me->GetCharmerOrOwnerGUID().IsEmpty())
+        {
+            if (!_mergeAttempted && me->HealthBelowPct(40))
+            {
+                if (_mergeSearchTimer <= diff)
+                {
+                    _mergeSearchTimer = 1000;
+                    if (Creature* partner = FindMergePartner())
+                    {
+                        _mergeAttempted = true;
+                        _mergeTarget = partner->GetGUID();
+                        _mergeTimer = 15000;
+                        DoCastVictim(SPELL_BLACK_BLOOD_SLUDGE);
+                        me->AttackStop();
+                        me->SetReactState(REACT_PASSIVE);
+                        me->SetWalk(false);
+                        me->GetMotionMaster()->Clear(MOTION_SLOT_ACTIVE);
+                        me->StopMoving();
+                        return;
+                    }
+                }
+                else
+                    _mergeSearchTimer -= diff;
+            }
+
+            if (me->HasUnitState(UNIT_STATE_CASTING))
+                return;
+
+            if (_sludgeTimer <= diff)
+            {
+                DoCastVictim(SPELL_BLACK_BLOOD_SLUDGE);
+                _sludgeTimer = urand(15000, 20000);
+            }
+            else
+                _sludgeTimer -= diff;
+        }
+
+        DoMeleeAttackIfReady();
+    }
+
+private:
+    ObjectGuid _mergeTarget;
+    bool _mergeAttempted = false;
+    bool _movingToMerge = false;
+    uint32 _mergeTimer = 0;
+    uint32 _mergeSearchTimer = 0;
+    uint32 _sludgeTimer = 5000;
+};
+
 /*#####
 # npc_invis_infernal_caster
 #####*/
@@ -1682,6 +1827,7 @@ public:
 void AddSC_shadowmoon_valley()
 {
     using namespace ShadowmoonValley;
+    RegisterCreatureAI(npc_black_blood_of_draenor);
     new npc_invis_infernal_caster();
     new npc_infernal_attacker();
     new npc_mature_netherwing_drake();
